@@ -74,7 +74,7 @@ public class RybaAutoMineScreen extends Screen {
         rows = tab == Tab.BLOKI
                 ? MathHelper.clamp(Math.min(RybaAutoMineClient.guiRows, (height - 200) / CELL), 3, 12)
                 : TOOL_ROWS;
-        ph = tab == Tab.BLOKI ? 178 + rows * CELL : 316;
+        ph = tab == Tab.BLOKI ? 178 + rows * CELL : 408;
         px = (width - pw) / 2;
         py = (height - ph) / 2;
         gridX = px + PAD;
@@ -150,7 +150,7 @@ public class RybaAutoMineScreen extends Screen {
             RybaAutoMineClient.update();
         }).dimensions(px + PAD + 3 * (bw + 3), by, bw, 16).build());
 
-        addDrawableChild(new DelaySlider(px + PAD, py + 104, pw - 2 * PAD, 20));
+        addDrawableChild(new SpeedSlider(px + PAD, py + 104, pw - 2 * PAD, 20));
     }
 
     private void initUstawienia() {
@@ -177,10 +177,20 @@ public class RybaAutoMineScreen extends Screen {
         addDrawableChild(search);
 
         int sy = gridY + TOOL_ROWS * CELL + 14;
-        addDrawableChild(new RowsSlider(px + PAD, sy, pw - 2 * PAD, 20));
-        addDrawableChild(new WidthSlider(px + PAD, sy + 24, pw - 2 * PAD, 20));
+        addDrawableChild(ButtonWidget.builder(repairLabel(), b -> {
+            RybaAutoMineClient.repairMode = switch (RybaAutoMineClient.repairMode) {
+                case "none" -> "bottles";
+                case "bottles" -> "command";
+                default -> "none";
+            };
+            b.setMessage(repairLabel());
+            RybaAutoMineClient.update();
+        }).dimensions(px + PAD, sy, pw - 2 * PAD, 18).build());
 
-        int cy = sy + 48;
+        addDrawableChild(new RowsSlider(px + PAD, sy + 22, pw - 2 * PAD, 20));
+        addDrawableChild(new WidthSlider(px + PAD, sy + 46, pw - 2 * PAD, 20));
+
+        int cy = sy + 70;
         int cbw = (pw - 2 * PAD - 4 * 4) / 5;
         int[] colors = {0x2E9E3E, 0x2E6FDB, 0x8E3EDB, 0xDB8A2E, 0xDB3E3E};
         for (int i = 0; i < colors.length; i++) {
@@ -190,6 +200,15 @@ public class RybaAutoMineScreen extends Screen {
                 RybaAutoMineClient.update();
             }).dimensions(px + PAD + i * (cbw + 4), cy, cbw, 20).build());
         }
+    }
+
+    private Text repairLabel() {
+        String s = switch (RybaAutoMineClient.repairMode) {
+            case "bottles" -> "§bNaprawa: butelki expa (przy kowadle w zasięgu 20 bl.)";
+            case "command" -> "§bNaprawa: komenda /repair (przy kowadle w zasięgu 20 bl.)";
+            default -> "§7Naprawa: wyłączona";
+        };
+        return Text.literal(s);
     }
 
     private void addPreset(String name, int bw, int i, int y, Predicate<Entry> p) {
@@ -212,25 +231,25 @@ public class RybaAutoMineScreen extends Screen {
         return Math.max(0, totalRows - rows);
     }
 
-    /** Suwak opóźnienia 0-10 ticków. */
-    private static class DelaySlider extends SliderWidget {
-        DelaySlider(int x, int y, int w, int h) {
-            super(x, y, w, h, Text.empty(), RybaAutoMineClient.delay / 10.0);
+    /** Suwak szybkości kopania: 0.1 - 10.0 bloków/s (skok co 0.1). */
+    private static class SpeedSlider extends SliderWidget {
+        SpeedSlider(int x, int y, int w, int h) {
+            super(x, y, w, h, Text.empty(), (RybaAutoMineClient.speed - 0.1) / 9.9);
             updateMessage();
         }
 
         @Override
         protected void updateMessage() {
-            int d = RybaAutoMineClient.delay;
-            setMessage(Text.literal("Opóźnienie (ticki): §e" + d + (d == 0 ? " §7(najszybciej)" : "")));
+            setMessage(Text.literal(String.format("Szybkość: §e%.1f bloków/s", RybaAutoMineClient.speed)));
         }
 
         @Override
         protected void applyValue() {
-            int d = (int) Math.round(this.value * 10);
-            this.value = d / 10.0;
-            if (d != RybaAutoMineClient.delay) {
-                RybaAutoMineClient.delay = d;
+            double raw = 0.1 + this.value * 9.9;
+            double s = Math.round(raw * 10) / 10.0;
+            this.value = (s - 0.1) / 9.9;
+            if (s != RybaAutoMineClient.speed) {
+                RybaAutoMineClient.speed = s;
                 RybaAutoMineClient.update();
             }
             updateMessage();

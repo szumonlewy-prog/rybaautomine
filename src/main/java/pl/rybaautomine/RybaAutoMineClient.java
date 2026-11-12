@@ -18,16 +18,18 @@ import java.util.*;
 
 public class RybaAutoMineClient implements ClientModInitializer {
     public static boolean enabled = false;
-    /** Opóźnienie między blokami w tickach: 0-10. */
-    public static int delay = 2;
-    /** Id preferowanego narzędzia (puste = używaj tego, co trzymane w ręce). */
+    /** Szybkość kopania w blokach na sekundę: 0.1 - 10.0. */
+    public static double speed = 2.0;
+    /** Id preferowanego narzędzia (puste = trzymany przedmiot). */
     public static String toolId = "";
+    /** "none" | "bottles" | "command" - sposób naprawy przy kowadle. */
+    public static String repairMode = "none";
     public static final Set<Identifier> selected = new LinkedHashSet<>();
 
     // Ustawienia wyglądu GUI (tylko po stronie klienta).
-    public static int guiRows = 8;      // 3-12
-    public static int guiWidth = 240;   // 200-420
-    public static int accentColor = 0x2E9E3E; // bazowy kolor ramki, gdy mod włączony
+    public static int guiRows = 8;
+    public static int guiWidth = 240;
+    public static int accentColor = 0x2E9E3E;
 
     private static KeyBinding openGui, toggleKey;
     private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("rybaautomine.txt");
@@ -52,13 +54,16 @@ public class RybaAutoMineClient implements ClientModInitializer {
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> sync());
     }
 
-    /** Wysyła ustawienia na serwer (serwer ignoruje guiRows/guiWidth/accentColor - to tylko wygląd). */
-    public static void sync() {
-        if (ClientPlayNetworking.canSend(ConfigPayload.ID))
-            ClientPlayNetworking.send(new ConfigPayload(enabled, delay, toolId, new ArrayList<>(selected)));
+    /** Przelicza blokі/s na opóźnienie w tickach (20 ticków = 1 sekunda). */
+    public static int delayTicks() {
+        return Math.max(1, (int) Math.round(20.0 / Math.max(0.1, speed)));
     }
 
-    /** Sync + zapis do pliku. */
+    public static void sync() {
+        if (ClientPlayNetworking.canSend(ConfigPayload.ID))
+            ClientPlayNetworking.send(new ConfigPayload(enabled, delayTicks(), toolId, repairMode, new ArrayList<>(selected)));
+    }
+
     public static void update() {
         sync();
         save();
@@ -67,8 +72,9 @@ public class RybaAutoMineClient implements ClientModInitializer {
     /** Zeruje wszystkie ustawienia i usuwa plik konfiguracji. */
     public static void resetAll() {
         enabled = false;
-        delay = 2;
+        speed = 2.0;
         toolId = "";
+        repairMode = "none";
         selected.clear();
         guiRows = 8;
         guiWidth = 240;
@@ -81,8 +87,9 @@ public class RybaAutoMineClient implements ClientModInitializer {
         try {
             List<String> lines = new ArrayList<>();
             lines.add(String.valueOf(enabled));
-            lines.add("delay=" + delay);
+            lines.add("speed=" + speed);
             lines.add("tool=" + toolId);
+            lines.add("repair=" + repairMode);
             lines.add("rows=" + guiRows);
             lines.add("width=" + guiWidth);
             lines.add("accent=" + Integer.toHexString(accentColor));
@@ -99,11 +106,12 @@ public class RybaAutoMineClient implements ClientModInitializer {
             enabled = Boolean.parseBoolean(lines.get(0).trim());
             for (int i = 1; i < lines.size(); i++) {
                 String line = lines.get(i).trim();
-                if (line.startsWith("delay=")) {
-                    try { delay = Math.max(0, Math.min(10, Integer.parseInt(line.substring(6)))); } catch (Exception ignored) {}
+                if (line.startsWith("speed=")) {
+                    try { speed = Math.max(0.1, Math.min(10.0, Double.parseDouble(line.substring(6)))); } catch (Exception ignored) {}
                     continue;
                 }
                 if (line.startsWith("tool=")) { toolId = line.substring(5); continue; }
+                if (line.startsWith("repair=")) { repairMode = line.substring(7); continue; }
                 if (line.startsWith("rows=")) {
                     try { guiRows = Math.max(3, Math.min(12, Integer.parseInt(line.substring(5)))); } catch (Exception ignored) {}
                     continue;
