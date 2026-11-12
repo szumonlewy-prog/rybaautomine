@@ -8,10 +8,13 @@ import net.minecraft.util.Identifier;
 
 import java.util.List;
 
-public record ConfigPayload(boolean enabled, List<Identifier> blocks) implements CustomPayload {
+/** tool: id przedmiotu-narzędzia (np. "minecraft:diamond_pickaxe"), puste = trzymany przedmiot. */
+public record ConfigPayload(boolean enabled, int delay, String tool, List<Identifier> blocks) implements CustomPayload {
     public static final Id<ConfigPayload> ID = new Id<>(Identifier.of("rybaautomine", "config"));
     public static final PacketCodec<RegistryByteBuf, ConfigPayload> CODEC = PacketCodec.tuple(
             PacketCodecs.BOOLEAN, ConfigPayload::enabled,
+            PacketCodecs.VAR_INT, ConfigPayload::delay,
+            PacketCodecs.STRING, ConfigPayload::tool,
             Identifier.PACKET_CODEC.collect(PacketCodecs.toList()), ConfigPayload::blocks,
             ConfigPayload::new);
 
