@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "rybaautomine",
+  "version": "${version}",
+  "name": "RybaAutoMine 13x13",
+  "description": "Niszczy wybrane w GUI bloki w obszarze 13x13x13 wokół gracza.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["pl.rybaautomine.RybaAutoMineMod"],
+    "client": ["pl.rybaautomine.RybaAutoMineClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
