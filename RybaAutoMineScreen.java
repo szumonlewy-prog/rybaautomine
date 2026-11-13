@@ -1,7 +1,6 @@
 package pl.rybaautomine;
 
 import net.minecraft.block.Block;
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
@@ -24,9 +23,8 @@ import java.util.function.Predicate;
 
 public class RybaAutoMineScreen extends Screen {
     private static final int COLS = 9, CELL = 22, PAD = 12;
-    private static final int MAP_SIZE = 50, MAP_CELL = 6;
 
-    private enum Tab { BLOKI, USTAWIENIA, MAPA }
+    private enum Tab { BLOKI, USTAWIENIA }
 
     /** Jeden wpis siatki bloków: id + ikona + nazwa. */
     private record Entry(Identifier id, Item item, String name) {}
@@ -43,9 +41,6 @@ public class RybaAutoMineScreen extends Screen {
     private List<Entry> blockFiltered;
     private String blockQuery = "";
     private int blockScroll = 0;
-
-    /** Tryb malowania mapy: 1=zielony, 2=czerwony, 3=pomarańczowy. */
-    private int paintMode = 1;
 
     private int px, py, ph, pw, rows, gridX, gridY;
     private ButtonWidget toggleBtn;
@@ -66,28 +61,22 @@ public class RybaAutoMineScreen extends Screen {
 
     @Override
     protected void init() {
-        if (tab == Tab.MAPA) {
-            pw = 2 * PAD + MAP_SIZE * MAP_CELL;
-            ph = 58 + MAP_SIZE * MAP_CELL + 72;
-        } else if (tab == Tab.BLOKI) {
-            pw = MathHelper.clamp(RybaAutoMineClient.guiWidth, 200, Math.max(200, width - 40));
-            rows = MathHelper.clamp(Math.min(RybaAutoMineClient.guiRows, (height - 200) / CELL), 3, 12);
-            ph = 178 + rows * CELL;
-        } else {
-            pw = MathHelper.clamp(RybaAutoMineClient.guiWidth, 200, Math.max(200, width - 40));
-            ph = 222;
-        }
+        pw = MathHelper.clamp(RybaAutoMineClient.guiWidth, 200, Math.max(200, width - 40));
+        rows = tab == Tab.BLOKI
+                ? MathHelper.clamp(Math.min(RybaAutoMineClient.guiRows, (height - 200) / CELL), 3, 12)
+                : 0;
+        ph = tab == Tab.BLOKI ? 178 + rows * CELL : 244;
         px = (width - pw) / 2;
         py = (height - ph) / 2;
         gridX = px + PAD;
-        gridY = tab == Tab.MAPA ? py + 58 : py + 138;
+        gridY = py + 138;
 
         addDrawableChild(ButtonWidget.builder(Text.literal("§c⟲ Reset"), b -> {
             RybaAutoMineClient.resetAll();
             reopen();
         }).dimensions(px + pw - PAD - 70, py + 7, 70, 14).build());
 
-        int tabW = (pw - 2 * PAD - 8) / 3;
+        int tabW = (pw - 2 * PAD - 4) / 2;
         addDrawableChild(ButtonWidget.builder(tabLabel("Bloki", tab == Tab.BLOKI), b -> {
             tab = Tab.BLOKI;
             reopen();
@@ -96,14 +85,8 @@ public class RybaAutoMineScreen extends Screen {
             tab = Tab.USTAWIENIA;
             reopen();
         }).dimensions(px + PAD + tabW + 4, py + 34, tabW, 18).build());
-        addDrawableChild(ButtonWidget.builder(tabLabel("Mapa", tab == Tab.MAPA), b -> {
-            tab = Tab.MAPA;
-            reopen();
-        }).dimensions(px + PAD + 2 * (tabW + 4), py + 34, tabW, 18).build());
 
-        if (tab == Tab.BLOKI) initBloki();
-        else if (tab == Tab.USTAWIENIA) initUstawienia();
-        else initMapa();
+        if (tab == Tab.BLOKI) initBloki(); else initUstawienia();
     }
 
     /** Zamyka i od razu otwiera to samo GUI od nowa, zachowując aktualną zakładkę. */
@@ -160,7 +143,7 @@ public class RybaAutoMineScreen extends Screen {
     }
 
     private void initUstawienia() {
-        int y = py + 58;
+        int toolY = py + 58;
         int cols = 4;
         int bw = (pw - 2 * PAD - (cols - 1) * 4) / cols;
         for (int i = 0; i < TOOL_KINDS.length; i++) {
@@ -173,10 +156,10 @@ public class RybaAutoMineScreen extends Screen {
                         RybaAutoMineClient.toolId = kind;
                         RybaAutoMineClient.update();
                         reopen();
-                    }).dimensions(px + PAD + col * (bw + 4), y + row * 22, bw, 18).build());
+                    }).dimensions(px + PAD + col * (bw + 4), toolY + row * 22, bw, 18).build());
         }
 
-        int sy = y + 2 * 22 + 8;
+        int sy = toolY + 2 * 22 + 8;
         addDrawableChild(ButtonWidget.builder(repairLabel(), b -> {
             RybaAutoMineClient.repairMode = switch (RybaAutoMineClient.repairMode) {
                 case "none" -> "bottles";
@@ -187,10 +170,11 @@ public class RybaAutoMineScreen extends Screen {
             RybaAutoMineClient.update();
         }).dimensions(px + PAD, sy, pw - 2 * PAD, 18).build());
 
-        addDrawableChild(new RowsSlider(px + PAD, sy + 24, pw - 2 * PAD, 20));
-        addDrawableChild(new WidthSlider(px + PAD, sy + 48, pw - 2 * PAD, 20));
+        addDrawableChild(new ThresholdSlider(px + PAD, sy + 22, pw - 2 * PAD, 20));
+        addDrawableChild(new RowsSlider(px + PAD, sy + 46, pw - 2 * PAD, 20));
+        addDrawableChild(new WidthSlider(px + PAD, sy + 70, pw - 2 * PAD, 20));
 
-        int cy = sy + 74;
+        int cy = sy + 96;
         int cbw = (pw - 2 * PAD - 4 * 4) / 5;
         int[] colors = {0x2E9E3E, 0x2E6FDB, 0x8E3EDB, 0xDB8A2E, 0xDB3E3E};
         for (int i = 0; i < colors.length; i++) {
@@ -203,55 +187,9 @@ public class RybaAutoMineScreen extends Screen {
         }
     }
 
-    private void initMapa() {
-        if (!RybaAutoMineClient.mapOriginSet) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.player != null) {
-                RybaAutoMineClient.mapOriginX = mc.player.getBlockPos().getX();
-                RybaAutoMineClient.mapOriginZ = mc.player.getBlockPos().getZ();
-                RybaAutoMineClient.mapOriginSet = true;
-                RybaAutoMineClient.updateMap();
-            }
-        }
-
-        int by = gridY + MAP_SIZE * MAP_CELL + 8;
-        int bw = (pw - 2 * PAD - 2 * 4) / 3;
-        addDrawableChild(ButtonWidget.builder(paintLabel(1, "Zielony"), b -> {
-            paintMode = 1;
-            b.setMessage(paintLabel(1, "Zielony"));
-        }).dimensions(px + PAD, by, bw, 18).build());
-        addDrawableChild(ButtonWidget.builder(paintLabel(2, "Czerwony"), b -> {
-            paintMode = 2;
-            b.setMessage(paintLabel(2, "Czerwony"));
-        }).dimensions(px + PAD + bw + 4, by, bw, 18).build());
-        addDrawableChild(ButtonWidget.builder(paintLabel(3, "Pomarańcz."), b -> {
-            paintMode = 3;
-            b.setMessage(paintLabel(3, "Pomarańcz."));
-        }).dimensions(px + PAD + 2 * (bw + 4), by, bw, 18).build());
-
-        addDrawableChild(ButtonWidget.builder(Text.literal("Wyczyść mapę"), b -> {
-            RybaAutoMineClient.mapCells.clear();
-            RybaAutoMineClient.updateMap();
-        }).dimensions(px + PAD, by + 24, pw - 2 * PAD, 18).build());
-
-        addDrawableChild(ButtonWidget.builder(Text.literal("Ustaw środek mapy tutaj"), b -> {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.player != null) {
-                RybaAutoMineClient.mapOriginX = mc.player.getBlockPos().getX();
-                RybaAutoMineClient.mapOriginZ = mc.player.getBlockPos().getZ();
-                RybaAutoMineClient.mapOriginSet = true;
-                RybaAutoMineClient.updateMap();
-            }
-        }).dimensions(px + PAD, by + 48, pw - 2 * PAD, 18).build());
-    }
-
-    private Text paintLabel(int mode, String name) {
-        return Text.literal(paintMode == mode ? "§l" + name : "§7" + name);
-    }
-
     private Text repairLabel() {
         String s = switch (RybaAutoMineClient.repairMode) {
-            case "bottles" -> "§bNaprawa: butelki expa (kowadło w zasięgu 20 bl.)";
+            case "bottles" -> "§bNaprawa: klik na butelkę (kowadło w zasięgu 20 bl.)";
             case "command" -> "§bNaprawa: komenda /repair (kowadło w zasięgu 20 bl.)";
             default -> "§7Naprawa: wyłączona";
         };
@@ -293,6 +231,30 @@ public class RybaAutoMineScreen extends Screen {
             this.value = (s - 0.1) / 9.9;
             if (s != RybaAutoMineClient.speed) {
                 RybaAutoMineClient.speed = s;
+                RybaAutoMineClient.update();
+            }
+            updateMessage();
+        }
+    }
+
+    /** Suwak progu naprawy: 5-90% POZOSTAŁEJ wytrzymałości. */
+    private static class ThresholdSlider extends SliderWidget {
+        ThresholdSlider(int x, int y, int w, int h) {
+            super(x, y, w, h, Text.empty(), (RybaAutoMineClient.repairThreshold - 5) / 85.0);
+            updateMessage();
+        }
+
+        @Override
+        protected void updateMessage() {
+            setMessage(Text.literal("Napraw przy: §e" + RybaAutoMineClient.repairThreshold + "% wytrzymałości"));
+        }
+
+        @Override
+        protected void applyValue() {
+            int t = 5 + (int) Math.round(this.value * 85);
+            this.value = (t - 5) / 85.0;
+            if (t != RybaAutoMineClient.repairThreshold) {
+                RybaAutoMineClient.repairThreshold = t;
                 RybaAutoMineClient.update();
             }
             updateMessage();
@@ -364,8 +326,6 @@ public class RybaAutoMineScreen extends Screen {
         ctx.fill(px, py + 34, px + pw, py + 35, accent);
         if (tab == Tab.BLOKI)
             ctx.fill(gridX - 2, gridY - 2, gridX + COLS * CELL + 2, gridY + rows * CELL + 2, 0xFF05070A);
-        else if (tab == Tab.MAPA)
-            ctx.fill(gridX - 1, gridY - 1, gridX + MAP_SIZE * MAP_CELL + 1, gridY + MAP_SIZE * MAP_CELL + 1, 0xFF05070A);
     }
 
     @Override
@@ -373,18 +333,11 @@ public class RybaAutoMineScreen extends Screen {
         super.render(ctx, mx, my, delta);
 
         ctx.drawText(textRenderer, Text.literal("§l⛏ RybaAutoMine"), px + PAD, py + 7, 0xFFFFFFFF, true);
-        String sub = switch (tab) {
-            case BLOKI -> "§7Obszar §f13×13×13 §7wokół gracza";
-            case USTAWIENIA -> "§7Narzędzie i wygląd GUI";
-            case MAPA -> "§7Zielony=kop, czerwony=omijaj, pomarańcz.=droga";
-        };
+        String sub = tab == Tab.BLOKI ? "§7Obszar §f25×25×25 §7wokół gracza" : "§7Narzędzie, naprawa i wygląd GUI";
         ctx.drawText(textRenderer, Text.literal(sub), px + PAD, py + 19, 0xFFFFFFFF, false);
 
-        if (tab == Tab.BLOKI) renderBloki(ctx, mx, my);
-        else if (tab == Tab.MAPA) renderMapa(ctx, mx, my);
-    }
+        if (tab != Tab.BLOKI) return; // zakładka Ustawienia nie ma siatki/przewijania
 
-    private void renderBloki(DrawContext ctx, int mx, int my) {
         String st = RybaAutoMineClient.selected.size() + " wybr.";
         ctx.drawText(textRenderer, Text.literal("§e" + st), px + pw - PAD - 70 - 4 - textRenderer.getWidth(st), py + 7, 0xFFFFFFFF, true);
 
@@ -418,7 +371,7 @@ public class RybaAutoMineScreen extends Screen {
         int fy = gridY + rows * CELL + 8;
         ctx.fill(px + PAD - 2, fy - 2, px + pw - PAD + 2, fy + 20, 0xFF05070A);
         if (RybaAutoMineClient.selected.isEmpty()) {
-            ctx.drawText(textRenderer, Text.literal("§8Kliknij bloki, aby je zaznaczyć"), px + PAD + 2, fy + 5, 0xFFFFFFFF, false);
+            ctx.drawText(textRenderer, Text.literal("§8Kliknij bloki albo naciśnij scroll na blok w świecie"), px + PAD + 2, fy + 5, 0xFFFFFFFF, false);
         } else {
             int shown = 0, maxIcons = (pw - 2 * PAD) / 18;
             for (Identifier id : RybaAutoMineClient.selected) {
@@ -442,52 +395,10 @@ public class RybaAutoMineScreen extends Screen {
         }
     }
 
-    private void renderMapa(DrawContext ctx, int mx, int my) {
-        for (var entry : RybaAutoMineClient.mapCells.entrySet()) {
-            int idx = entry.getKey();
-            int lx = idx % MAP_SIZE, lz = idx / MAP_SIZE;
-            int color = switch (entry.getValue()) {
-                case 1 -> 0xAA4CAF50;
-                case 2 -> 0xAAE53935;
-                case 3 -> 0xAAFF9800;
-                default -> 0x00000000;
-            };
-            int x = gridX + lx * MAP_CELL, y = gridY + lz * MAP_CELL;
-            ctx.fill(x, y, x + MAP_CELL, y + MAP_CELL, color);
-        }
-
-        // kropka gracza na żywo
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player != null) {
-            int lx = mc.player.getBlockPos().getX() - RybaAutoMineClient.mapOriginX + MAP_SIZE / 2;
-            int lz = mc.player.getBlockPos().getZ() - RybaAutoMineClient.mapOriginZ + MAP_SIZE / 2;
-            if (lx >= 0 && lx < MAP_SIZE && lz >= 0 && lz < MAP_SIZE) {
-                int x = gridX + lx * MAP_CELL, y = gridY + lz * MAP_CELL;
-                ctx.fill(x, y, x + MAP_CELL, y + MAP_CELL, 0xFFFFFFFF);
-            }
-        }
-
-        if (mx >= gridX && mx < gridX + MAP_SIZE * MAP_CELL && my >= gridY && my < gridY + MAP_SIZE * MAP_CELL) {
-            ctx.drawTooltip(textRenderer, List.of(Text.literal("§7Przeciągnij, by malować")), mx, my);
-        }
-    }
-
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
         if (super.mouseClicked(mx, my, button)) return true;
-        if (tab == Tab.BLOKI) return blokiClick(mx, my, button);
-        if (tab == Tab.MAPA) return mapaPaint(mx, my, button);
-        return false;
-    }
-
-    @Override
-    public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
-        if (tab == Tab.MAPA && mapaPaint(mx, my, button)) return true;
-        return super.mouseDragged(mx, my, button, dx, dy);
-    }
-
-    private boolean blokiClick(double mx, double my, int button) {
-        if (button != 0) return false;
+        if (button != 0 || tab != Tab.BLOKI) return false;
         int col = (int) Math.floor((mx - gridX) / CELL), row = (int) Math.floor((my - gridY) / CELL);
         if (mx >= gridX && my >= gridY && col < COLS && row < rows) {
             int idx = (blockScroll + row) * COLS + col;
@@ -499,17 +410,6 @@ public class RybaAutoMineScreen extends Screen {
             }
         }
         return false;
-    }
-
-    private boolean mapaPaint(double mx, double my, int button) {
-        int lx = (int) Math.floor((mx - gridX) / MAP_CELL), lz = (int) Math.floor((my - gridY) / MAP_CELL);
-        if (lx < 0 || lx >= MAP_SIZE || lz < 0 || lz >= MAP_SIZE) return false;
-        int idx = lz * MAP_SIZE + lx;
-        if (button == 1) RybaAutoMineClient.mapCells.remove(idx);
-        else if (button == 0) RybaAutoMineClient.mapCells.put(idx, paintMode);
-        else return false;
-        RybaAutoMineClient.updateMap();
-        return true;
     }
 
     @Override

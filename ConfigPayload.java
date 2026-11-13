@@ -9,17 +9,18 @@ import net.minecraft.util.Identifier;
 import java.util.List;
 
 /**
- * tool: id przedmiotu-narzędzia (np. "minecraft:diamond_pickaxe"), puste = trzymany przedmiot.
- * repairMode: "none" | "bottles" | "command".
+ * tool: rodzaj narzędzia (np. "axe" pasuje do każdej siekiery), puste = trzymany przedmiot.
+ * repairSpec: "none" albo "bottles:25" / "command:25" (tryb + próg % pozostałej wytrzymałości,
+ * sklejone jednym tekstem, żeby nie zwiększać liczby pól w pakiecie sieciowym).
  */
-public record ConfigPayload(boolean enabled, int delay, String tool, String repairMode, List<Identifier> blocks)
+public record ConfigPayload(boolean enabled, int delay, String tool, String repairSpec, List<Identifier> blocks)
         implements CustomPayload {
     public static final Id<ConfigPayload> ID = new Id<>(Identifier.of("rybaautomine", "config"));
     public static final PacketCodec<RegistryByteBuf, ConfigPayload> CODEC = PacketCodec.tuple(
             PacketCodecs.BOOLEAN, ConfigPayload::enabled,
             PacketCodecs.VAR_INT, ConfigPayload::delay,
             PacketCodecs.STRING, ConfigPayload::tool,
-            PacketCodecs.STRING, ConfigPayload::repairMode,
+            PacketCodecs.STRING, ConfigPayload::repairSpec,
             Identifier.PACKET_CODEC.collect(PacketCodecs.toList()), ConfigPayload::blocks,
             ConfigPayload::new);
 

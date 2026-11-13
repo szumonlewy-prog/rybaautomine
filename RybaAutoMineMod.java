@@ -10,16 +10,19 @@ import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.*;
 
 public class RybaAutoMineMod implements ModInitializer {
-    /** Promień szukania bloków do wykopania: 6 => obszar 13x13x13 (6 + środek + 6). */
-    public static final int RADIUS = 6;
+    /** Promień szukania bloków do wykopania: 12 => obszar 25x25x25 (12 + środek + 12). */
+    public static final int RADIUS = 12;
     /** Ile bloków nad głową gracza ma priorytet (kolumna nad graczem). */
     public static final int COLUMN_UP = 5;
     /** Opóźnienie ustawiane w GUI: w tickach między kolejnymi wybijanymi blokami. */
@@ -28,68 +31,55 @@ public class RybaAutoMineMod implements ModInitializer {
     public static final double REACH = 3.5;
     /** Promień szukania kowadła do naprawy. */
     public static final int ANVIL_RADIUS = 20;
-    /** Próg wytrzymałości narzędzia (procent), poniżej którego mod szuka kowadła. */
-    public static final double REPAIR_THRESHOLD = 0.50;
+    /** Jeden blok na 0.5s = 10 ticków - stałe tempo usuwania przeszkód w drodze. */
+    public static final int OBSTACLE_BREAK_TICKS = 10;
     /** Co ile ticków odświeżać cel i próbować kroku ruchu (ruch jest "eksperymentalny"). */
     public static final int MOVE_INTERVAL = 2;
 
-    /** Jeden blok na 0.5s = 10 ticków - stałe tempo usuwania przeszkód w drodze. */
-    public static final int OBSTACLE_BREAK_TICKS = 10;
-    /** Rozmiar mapy stref (50x50), zakotwiczonej w originX/originZ wysłanych z GUI. */
-    public static final int MAP_SIZE = 50;
-
-    private record Cfg(boolean enabled, int delay, String tool, String repairMode, Set<Identifier> blocks) {}
-
-    /** Mapa stref gracza: green=gdzie kopać, red=gdzie nie wchodzić, orange=droga do kowadła. */
-    private record MapCfg(int originX, int originZ, Set<Integer> green, Set<Integer> red, Set<Integer> orange) {
-        boolean isEmpty() { return green.isEmpty() && red.isEmpty() && orange.isEmpty(); }
-    }
+    private record Cfg(boolean enabled, int delay, String tool, String repairMode, int repairThreshold,
+                        Set<Identifier> blocks) {}
 
     /** Stan ruchu/naprawy danego gracza, nie wysyłany z GUI - liczony tylko na serwerze. */
     private static class State {
         int breakCooldown = 0;
         int repairCooldown = 0;
         int obstacleCooldown = 0;
-        List<BlockPos> path = null; // wyznaczona trasa pomarańczowymi komórkami do kowadła
-        int pathIndex = 0;
     }
 
     private static final Map<UUID, Cfg> CONFIGS = new HashMap<>();
-    private static final Map<UUID, MapCfg> MAPS = new HashMap<>();
     private static final Map<UUID, State> STATES = new HashMap<>();
     private int tick = 0;
 
     @Override
     public void onInitialize() {
         PayloadTypeRegistry.playC2S().register(ConfigPayload.ID, ConfigPayload.CODEC);
-        PayloadTypeRegistry.playC2S().register(MapPayload.ID, MapPayload.CODEC);
-
-        ServerPlayNetworking.registerGlobalReceiver(MapPayload.ID, (payload, context) -> {
-            ServerPlayerEntity player = context.player();
-            if (!player.server.isSingleplayer() && !player.hasPermissionLevel(2)) return;
-            MAPS.put(player.getUuid(), new MapCfg(
-                    payload.originX(), payload.originZ(),
-                    new HashSet<>(payload.green()), new HashSet<>(payload.red()), new HashSet<>(payload.orange())));
-            State st = STATES.get(player.getUuid());
-            if (st != null) { st.path = null; st.pathIndex = 0; } // trasa się zmieniła, policz ją od nowa
-        });
 
         ServerPlayNetworking.registerGlobalReceiver(ConfigPayload.ID, (payload, context) -> {
             ServerPlayerEntity player = context.player();
             // Na serwerze dedykowanym tylko operatorzy (poziom 2+); w singleplayerze każdy.
             if (!player.server.isSingleplayer() && !player.hasPermissionLevel(2)) return;
             String tool = payload.tool() == null ? "" : payload.tool();
-            String repair = payload.repairMode() == null ? "none" : payload.repairMode();
+
+            String spec = payload.repairSpec() == null ? "none" : payload.repairSpec();
+            String repairMode = "none";
+            int threshold = 25;
+            if (!spec.equals("none")) {
+                String[] parts = spec.split(":");
+                repairMode = parts[0];
+                if (parts.length > 1) {
+                    try { threshold = Integer.parseInt(parts[1]); } catch (Exception ignored) {}
+                }
+            }
+
             CONFIGS.put(player.getUuid(), new Cfg(
                     payload.enabled(),
                     Math.max(1, Math.min(MAX_DELAY, payload.delay())),
-                    tool, repair,
+                    tool, repairMode, threshold,
                     new HashSet<>(payload.blocks())));
         });
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             CONFIGS.remove(handler.getPlayer().getUuid());
-            MAPS.remove(handler.getPlayer().getUuid());
             STATES.remove(handler.getPlayer().getUuid());
         });
 
@@ -101,42 +91,39 @@ public class RybaAutoMineMod implements ModInitializer {
                 if (player.isSpectator()) continue;
                 if (tick % MOVE_INTERVAL != 0) continue;
                 State st = STATES.computeIfAbsent(player.getUuid(), u -> new State());
-                MapCfg map = MAPS.get(player.getUuid());
-                tickPlayer(player, cfg, map, st);
+                tickPlayer(player, cfg, st);
             }
         });
     }
 
-    private static void tickPlayer(ServerPlayerEntity player, Cfg cfg, MapCfg map, State st) {
+    private static void tickPlayer(ServerPlayerEntity player, Cfg cfg, State st) {
         if (st.breakCooldown > 0) st.breakCooldown -= MOVE_INTERVAL;
         if (st.repairCooldown > 0) st.repairCooldown -= MOVE_INTERVAL;
         if (st.obstacleCooldown > 0) st.obstacleCooldown -= MOVE_INTERVAL;
 
         if (!cfg.repairMode().equals("none")) {
             ItemStack tool = currentTool(player, cfg.tool());
-            if (needsRepair(tool)) {
+            if (needsRepair(tool, cfg.repairThreshold())) {
                 ServerWorld world = player.getServerWorld();
                 BlockPos anvil = findNearestAnvil(world, player.getBlockPos());
                 if (anvil != null) {
                     Vec3d center = Vec3d.ofCenter(anvil);
                     if (player.getPos().squaredDistanceTo(center) <= REACH * REACH) {
                         if (st.repairCooldown <= 0) {
-                            tryRepair(player, tool, cfg.repairMode());
+                            tryRepair(player, cfg.repairMode(), anvil);
                             st.repairCooldown = 40; // nie spamuj co 2 ticki
                         }
-                        st.path = null;
                     } else {
-                        walkTowardAnvil(player, anvil, map, st);
+                        walkToward(player, center, st);
                     }
                     return; // dopóki naprawia - nie kopie
                 }
-                st.path = null;
                 // brak kowadła w promieniu ANVIL_RADIUS - kop dalej mimo niskiej wytrzymałości
             }
         }
 
         ServerWorld world = player.getServerWorld();
-        BlockPos target = findNextTarget(world, player, cfg, map);
+        BlockPos target = findNextTarget(world, player, cfg);
         if (target == null) return;
 
         Vec3d center = Vec3d.ofCenter(target);
@@ -153,13 +140,12 @@ public class RybaAutoMineMod implements ModInitializer {
 
     /**
      * Niszczy JEDEN blok na raz, po kolei: najpierw kolumna nad graczem (max COLUMN_UP),
-     * potem reszta obszaru 13x13x13 od najbliższego bloku do najdalszego.
+     * potem reszta obszaru 25x25x25 od najbliższego bloku do najdalszego.
      */
-    private static BlockPos findNextTarget(ServerWorld world, ServerPlayerEntity player, Cfg cfg, MapCfg map) {
+    private static BlockPos findNextTarget(ServerWorld world, ServerPlayerEntity player, Cfg cfg) {
         BlockPos c = player.getBlockPos();
         BlockPos best = null;
         double bestScore = Double.MAX_VALUE;
-        boolean useMap = map != null && !map.isEmpty();
 
         for (BlockPos pos : BlockPos.iterate(c.add(-RADIUS, -RADIUS, -RADIUS), c.add(RADIUS, RADIUS, RADIUS))) {
             var state = world.getBlockState(pos);
@@ -170,17 +156,6 @@ public class RybaAutoMineMod implements ModInitializer {
             int dy = pos.getY() - c.getY();
             int dz = pos.getZ() - c.getZ();
             boolean column = dx == 0 && dz == 0 && dy >= 1 && dy <= COLUMN_UP + 1;
-
-            if (useMap) {
-                Integer cell = cellIndex(map, pos.getX(), pos.getZ());
-                boolean isRed = cell != null && map.red().contains(cell);
-                if (isRed) continue; // czerwone - nigdy nie wchodź/kop tam
-                if (!column) {
-                    boolean isGreen = cell != null && map.green().contains(cell);
-                    if (!map.green().isEmpty() && !isGreen) continue; // są zielone strefy - trzymaj się ich
-                }
-            }
-
             double score = column ? dy : 100 + dx * dx + dy * dy + dz * dz;
             if (score < bestScore) {
                 bestScore = score;
@@ -188,14 +163,6 @@ public class RybaAutoMineMod implements ModInitializer {
             }
         }
         return best;
-    }
-
-    /** Zwraca indeks komórki mapy (0..2499) dla danego X/Z, albo null, jeśli poza mapą 50x50. */
-    private static Integer cellIndex(MapCfg map, int worldX, int worldZ) {
-        int lx = worldX - map.originX() + MAP_SIZE / 2;
-        int lz = worldZ - map.originZ() + MAP_SIZE / 2;
-        if (lx < 0 || lx >= MAP_SIZE || lz < 0 || lz >= MAP_SIZE) return null;
-        return lz * MAP_SIZE + lx;
     }
 
     private static BlockPos findNearestAnvil(ServerWorld world, BlockPos center) {
@@ -218,7 +185,7 @@ public class RybaAutoMineMod implements ModInitializer {
      * (np. ściana 2 bloki), po OBSTACLE_BREAK_TICKS (0.5s) niszczy blok, który stoi
      * na drodze - w stałym tempie, niezależnie od ustawionej szybkości kopania.
      * To nie jest pełny pathfinding: po bardzo złożonym terenie (przepaść, labirynt)
-     * gracz nadal może utknąć. Sprawdzone w praktyce może wymagać dalszych poprawek.
+     * gracz nadal może utknąć.
      */
     private static void walkToward(ServerPlayerEntity player, Vec3d target, State st) {
         Vec3d pos = player.getPos();
@@ -234,7 +201,7 @@ public class RybaAutoMineMod implements ModInitializer {
         float yaw = (float) (Math.toDegrees(Math.atan2(-dx, dz)));
         if (blocked) {
             if (player.isOnGround()) player.jump();
-            if (st != null && st.obstacleCooldown <= 0) {
+            if (st.obstacleCooldown <= 0) {
                 BlockPos obstacle = findObstacleBlock(player, sx, sz);
                 if (obstacle != null) {
                     player.interactionManager.tryBreakBlock(obstacle);
@@ -261,61 +228,6 @@ public class RybaAutoMineMod implements ModInitializer {
         return null;
     }
 
-    /**
-     * Chodzenie do kowadła: jeśli na mapie są narysowane pomarańczowe komórki,
-     * wyznacza trasę przez nie (najbliższy nieodwiedzony punkt po kolei) i idzie
-     * nią krok po kroku, zamiast iść do kowadła na wprost.
-     */
-    private static void walkTowardAnvil(ServerPlayerEntity player, BlockPos anvil, MapCfg map, State st) {
-        if (map == null || map.orange().isEmpty()) {
-            walkToward(player, Vec3d.ofCenter(anvil), st);
-            return;
-        }
-        if (st.path == null) {
-            st.path = buildOrangePath(player.getBlockPos(), anvil, map);
-            st.pathIndex = 0;
-        }
-        if (st.path.isEmpty()) {
-            walkToward(player, Vec3d.ofCenter(anvil), st);
-            return;
-        }
-        if (st.pathIndex >= st.path.size()) {
-            walkToward(player, Vec3d.ofCenter(anvil), st);
-            return;
-        }
-        BlockPos waypoint = st.path.get(st.pathIndex);
-        Vec3d center = Vec3d.ofCenter(waypoint);
-        if (player.getPos().squaredDistanceTo(new Vec3d(center.x, player.getY(), center.z)) <= 1.0) {
-            st.pathIndex++;
-        }
-        walkToward(player, center, st);
-    }
-
-    /** Łańcuch "najbliższy nieodwiedzony punkt" przez pomarańczowe komórki, od gracza do kowadła. */
-    private static List<BlockPos> buildOrangePath(BlockPos from, BlockPos anvil, MapCfg map) {
-        List<int[]> remaining = new ArrayList<>();
-        for (int idx : map.orange()) {
-            int lx = idx % MAP_SIZE, lz = idx / MAP_SIZE;
-            remaining.add(new int[]{map.originX() - MAP_SIZE / 2 + lx, map.originZ() - MAP_SIZE / 2 + lz});
-        }
-        List<BlockPos> path = new ArrayList<>();
-        int curX = from.getX(), curZ = from.getZ();
-        while (!remaining.isEmpty()) {
-            int bestI = -1;
-            long bestD = Long.MAX_VALUE;
-            for (int i = 0; i < remaining.size(); i++) {
-                long dx = remaining.get(i)[0] - curX, dz = remaining.get(i)[1] - curZ;
-                long d = dx * dx + dz * dz;
-                if (d < bestD) { bestD = d; bestI = i; }
-            }
-            int[] p = remaining.remove(bestI);
-            path.add(new BlockPos(p[0], from.getY(), p[1]));
-            curX = p[0];
-            curZ = p[1];
-        }
-        return path;
-    }
-
     /** Dopasowuje po RODZAJU narzędzia (np. "axe" pasuje do każdej siekiery, drewnianej po netherytową). */
     private static boolean matchesKind(Identifier id, String kind) {
         String path = id.getPath();
@@ -333,29 +245,39 @@ public class RybaAutoMineMod implements ModInitializer {
         return player.getMainHandStack();
     }
 
-    private static boolean needsRepair(ItemStack stack) {
+    private static boolean needsRepair(ItemStack stack, int thresholdPercent) {
         if (stack.isEmpty() || !stack.isDamageable()) return false;
         double remaining = 1.0 - (double) stack.getDamage() / stack.getMaxDamage();
-        return remaining <= REPAIR_THRESHOLD;
+        return remaining <= thresholdPercent / 100.0;
     }
 
     /**
-     * Naprawia narzędzie wprost w kodzie, bez odtwarzania ręcznych kliknięć na kowadle.
-     * Korzysta tylko ze stabilnych, podstawowych metod (setDamage, decrement), więc
-     * zawsze się skompiluje i zawsze zadziała - kosztem tego, że nie pokazuje graczowi
-     * okna kowadła, tylko "magicznie" naprawia narzędzie, gdy gracz do niego podejdzie.
+     * Wykonuje te same dwa "kliknięcia", co gracz ręcznie: najpierw otwiera GUI kowadła,
+     * potem klika w butelkę z expem. Mod sam NIE naprawia narzędzia ani nie liczy butelek -
+     * całą resztę (system naprawy na serwerze, sprawdzenie ilości "Komponenty: 10" itd.)
+     * robi dokładnie to, co zawsze robi przy ręcznym kliknięciu. To miejsce jest najbardziej
+     * niepewne co do kompilacji, bo dokładne nazwy parametrów tych metod różnią się między
+     * wersjami Minecrafta - jeśli się nie skompiluje, wklej mi dokładny błąd.
      */
-    private static void tryRepair(ServerPlayerEntity player, ItemStack tool, String mode) {
+    private static void tryRepair(ServerPlayerEntity player, String mode, BlockPos anvilPos) {
         if (mode.equals("bottles")) {
             var inv = player.getInventory();
             int bottleSlot = -1;
-            for (int i = 0; i < 9; i++) {
+            for (int i = 0; i < inv.size(); i++) {
                 ItemStack s = inv.getStack(i);
                 if (!s.isEmpty() && s.getItem() == Items.EXPERIENCE_BOTTLE) { bottleSlot = i; break; }
             }
-            if (bottleSlot < 0) return; // brak butelek w hotbarze - spróbuje ponownie później
-            inv.getStack(bottleSlot).decrement(1);
-            tool.setDamage(0);
+            if (bottleSlot < 0) return; // brak butelek - spróbuje ponownie później
+            ItemStack bottleStack = inv.getStack(bottleSlot);
+
+            // 1) "klik" na kowadło - otwiera jego GUI, tak jak zwykłe kliknięcie gracza.
+            BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(anvilPos), Direction.UP, anvilPos, false);
+            player.interactionManager.interactBlock(player, player.getWorld(),
+                    player.getStackInHand(Hand.MAIN_HAND), Hand.MAIN_HAND, hit);
+
+            // 2) "klik" na butelkę - dalej dzieje się to, co robi system naprawy na Twoim serwerze.
+            player.interactionManager.interactItem(player, player.getWorld(), bottleStack, Hand.MAIN_HAND);
+
         } else if (mode.equals("command")) {
             if (player.getServer() == null) return;
             player.getServer().getCommandManager()
